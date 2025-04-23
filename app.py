@@ -8,6 +8,7 @@ from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 from langdetect import detect  # Add this import
+import numpy as np
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -40,9 +41,33 @@ for message in st.session_state.messages:
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
 docs = text_splitter.split_documents(data)
 
-vectorstore = FAISS.from_documents(
-    docs,
-    GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+# Batching for embeddings
+batch_size = 10
+all_embeddings = []
+batched_docs = []
+embedder = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+
+for i in range(0, len(docs), batch_size):
+    batch = docs[i:i+batch_size]
+    texts = [doc.page_content for doc in batch]
+    try:
+        embeddings = embedder.embed_documents(texts)
+        all_embeddings.extend(embeddings)
+        batched_docs.extend(batch)
+    except Exception as e:
+        st.warning(f"Batch {i//batch_size+1} failed to embed: {e}")
+
+if not all_embeddings:
+    st.error("Failed to embed any document chunks. Try a smaller PDF.")
+    st.stop()
+
+# Convert embeddings to numpy array for FAISS
+all_embeddings = np.array(all_embeddings).astype("float32")
+
+# Build FAISS vectorstore from embeddings and docs
+vectorstore = FAISS.from_embeddings(
+    all_embeddings,
+    batched_docs
 )
 retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
 
