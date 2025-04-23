@@ -51,16 +51,22 @@ import time
 
 # Add retry decorator and modify the embedding section
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10)
+    stop=stop_after_attempt(5),  # Increase attempts
+    wait=wait_exponential(multiplier=2, min=1, max=30),  # Adjust wait times
+    reraise=True
 )
 def get_embeddings(texts, embedder):
-    return embedder.embed_documents(texts)
+    try:
+        return embedder.embed_documents(texts)
+    except Exception as e:
+        st.error(f"Embedding error: {str(e)}")
+        raise
 
 # Modify the embedding section
+batch_size = 5  # Reduce batch size
 embedder = GoogleGenerativeAIEmbeddings(
     model="models/embedding-001",
-    request_timeout=120,  # Increase timeout to 120 seconds
+    request_timeout=300,  # Increase timeout to 5 minutes
 )
 
 for i in range(0, len(docs), batch_size):
@@ -70,9 +76,10 @@ for i in range(0, len(docs), batch_size):
         embeddings = get_embeddings(texts, embedder)
         all_embeddings.extend(embeddings)
         batched_docs.extend(batch)
-        time.sleep(1)  # Add a small delay between batches
+        time.sleep(2)  # Increase delay between batches
     except Exception as e:
         st.warning(f"Batch {i//batch_size+1} failed to embed after retries: {e}")
+        continue  # Continue with next batch instead of stopping
 
 if not all_embeddings:
     st.error("Failed to embed any document chunks. Try a smaller PDF.")
