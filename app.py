@@ -45,17 +45,34 @@ docs = text_splitter.split_documents(data)
 batch_size = 10
 all_embeddings = []
 batched_docs = []
-embedder = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+# Add these imports at the top
+from tenacity import retry, stop_after_attempt, wait_exponential
+import time
+
+# Add retry decorator and modify the embedding section
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10)
+)
+def get_embeddings(texts, embedder):
+    return embedder.embed_documents(texts)
+
+# Modify the embedding section
+embedder = GoogleGenerativeAIEmbeddings(
+    model="models/embedding-001",
+    request_timeout=120,  # Increase timeout to 120 seconds
+)
 
 for i in range(0, len(docs), batch_size):
     batch = docs[i:i+batch_size]
     texts = [doc.page_content for doc in batch]
     try:
-        embeddings = embedder.embed_documents(texts)
+        embeddings = get_embeddings(texts, embedder)
         all_embeddings.extend(embeddings)
         batched_docs.extend(batch)
+        time.sleep(1)  # Add a small delay between batches
     except Exception as e:
-        st.warning(f"Batch {i//batch_size+1} failed to embed: {e}")
+        st.warning(f"Batch {i//batch_size+1} failed to embed after retries: {e}")
 
 if not all_embeddings:
     st.error("Failed to embed any document chunks. Try a smaller PDF.")

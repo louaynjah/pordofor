@@ -7,3 +7,4 @@ python-dotenv
 langdetect
 pypdf
 numpy
+tenacity>=8.0.0
