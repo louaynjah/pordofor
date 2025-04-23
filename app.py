@@ -1,16 +1,19 @@
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langdetect import detect
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain.vectorstores import FAISS
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from langdetect import detect  # Add this import
 import numpy as np
-from dotenv import load_dotenv
-from transformers import pipeline
 
+from dotenv import load_dotenv
 load_dotenv()
 
-st.title("RAG Application using Sentence Transformers (Free)")
+st.title("RAG Application using Gemini Pro")
 
 # File uploader for user PDF
 uploaded_file = st.file_uploader("Upload a PDF file", type="pdf")
@@ -22,6 +25,7 @@ if uploaded_file is not None:
     loader = PyPDFLoader("temp_uploaded.pdf")
     data = loader.load()
 else:
+
     st.info("Please upload a PDF file to start.")
     st.stop()
 
@@ -37,39 +41,91 @@ for message in st.session_state.messages:
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
 docs = text_splitter.split_documents(data)
 
-# Use HuggingFace sentence-transformers for free embeddings
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-vectorstore = FAISS.from_documents(docs, embeddings)
-retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+# Batching for embeddings
+batch_size = 10
+all_embeddings = []
+batched_docs = []
+embedder = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
-# Load QA pipeline (do this once, outside the query block)
-@st.cache_resource
-def load_qa_pipeline():
-    return pipeline("question-answering", model="deepset/roberta-base-squad2")
+for i in range(0, len(docs), batch_size):
+    batch = docs[i:i+batch_size]
+    texts = [doc.page_content for doc in batch]
+    try:
+        embeddings = embedder.embed_documents(texts)
+        all_embeddings.extend(embeddings)
+        batched_docs.extend(batch)
+    except Exception as e:
+        st.warning(f"Batch {i//batch_size+1} failed to embed: {e}")
 
-qa_pipeline = load_qa_pipeline()
+if not all_embeddings:
+    st.error("Failed to embed any document chunks. Try a smaller PDF.")
+    st.stop()
+
+# Convert embeddings to numpy array for FAISS
+all_embeddings = np.array(all_embeddings).astype("float32")
+
+# Build FAISS vectorstore from embeddings and docs
+vectorstore = FAISS.from_embeddings(
+    all_embeddings,
+    batched_docs
+)
+retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0, max_tokens=None, timeout=None)
 
 query = st.chat_input("Ask me anything: ")
+prompt = query
 
 if query:
+    # Detect language of the user's question
     user_lang = detect(query)
-    # Retrieve relevant docs
-    results = retriever.get_relevant_documents(query)
-    if results:
-        # Concatenate top 3 chunks for context
-        context = " ".join([doc.page_content for doc in results])
-        # Use QA model to answer
-        qa_input = {"question": query, "context": context}
-        answer = qa_pipeline(qa_input)["answer"]
-    else:
-        answer = "Sorry, I couldn't find an answer in the document."
+    
+    # Define system prompts for supported languages
+    system_prompts = {
+        "en": (
+            "You are an assistant for question-answering tasks. "
+            "Use the following pieces of retrieved context to answer "
+            "the question. If you don't know the answer, say that you "
+            "don't know. Use six sentences maximum and keep the "
+            "answer concise.\n\n{context}"
+        ),
+        "fr": (
+            "Vous êtes un assistant pour des tâches de questions-réponses. "
+            "Utilisez les éléments de contexte récupérés suivants pour répondre "
+            "à la question. Si vous ne connaissez pas la réponse, dites-le. "
+            "Utilisez six phrases maximum et restez concis.\n\n{context}"
+        ),
+        "ar": (
+            "أنت مساعد لمهام الإجابة على الأسئلة. استخدم السياق التالي للإجابة "
+            "على السؤال. إذا لم تعرف الإجابة، قل أنك لا تعرف. استخدم ست جمل كحد أقصى وكن موجزًا.\n\n{context}"
+        ),
+        # Add more languages as needed
+    }
+    # Choose the system prompt based on detected language, default to English
+    system_prompt = system_prompts.get(user_lang, system_prompts["en"])
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system_prompt),
+            ("human", "{input}"),
+        ]
+    )
 
     # Display user message
     with st.chat_message("user"):
         st.markdown(query)
+    
+    # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": query})
-
+    
+    # Get model response
+    question_answer_chain = create_stuff_documents_chain(llm, prompt)
+    rag_chain = create_retrieval_chain(retriever, question_answer_chain)
+    response = rag_chain.invoke({"input": query})
+    
     # Display assistant response
     with st.chat_message("assistant"):
-        st.markdown(answer)
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.markdown(response["answer"])
+    
+    # Add assistant response to chat history
+    st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
