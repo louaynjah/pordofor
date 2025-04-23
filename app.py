@@ -40,6 +40,9 @@ for message in st.session_state.messages:
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
 docs = text_splitter.split_documents(data)
 
+# Limit to first 20 chunks to avoid embedding timeout
+docs = docs[:20]
+
 vectorstore = FAISS.from_documents(
     docs,
     GoogleGenerativeAIEmbeddings(model="models/embedding-001")
