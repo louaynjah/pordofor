@@ -6,6 +6,8 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langdetect import detect
 import numpy as np
 from dotenv import load_dotenv
+from transformers import pipeline
+
 load_dotenv()
 
 st.title("RAG Application using Sentence Transformers (Free)")
@@ -40,6 +42,13 @@ embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 vectorstore = FAISS.from_documents(docs, embeddings)
 retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 3})
 
+# Load QA pipeline (do this once, outside the query block)
+@st.cache_resource
+def load_qa_pipeline():
+    return pipeline("question-answering", model="deepset/roberta-base-squad2")
+
+qa_pipeline = load_qa_pipeline()
+
 query = st.chat_input("Ask me anything: ")
 
 if query:
@@ -47,7 +56,11 @@ if query:
     # Retrieve relevant docs
     results = retriever.get_relevant_documents(query)
     if results:
-        answer = results[0].page_content
+        # Concatenate top 3 chunks for context
+        context = " ".join([doc.page_content for doc in results])
+        # Use QA model to answer
+        qa_input = {"question": query, "context": context}
+        answer = qa_pipeline(qa_input)["answer"]
     else:
         answer = "Sorry, I couldn't find an answer in the document."
 
